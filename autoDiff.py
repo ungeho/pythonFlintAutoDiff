@@ -1,5 +1,18 @@
 from flint import arb, ctx
 
+def require_pos(v: arb, *, what="x"):
+    """
+    v が『確実に正』であることを要求する。
+    （区間が 0 を含む可能性があれば定義域外として止める）
+    """
+    try:
+        if v > 0:
+            return
+    except TypeError:
+        pass
+    raise ValueError(
+        f"{what} must be strictly positive (interval must not include 0). got {v}")
+
 
 class DualArb:
     """
@@ -78,15 +91,37 @@ class DualArb:
 
     # --- 累乗 ---
 
+
     def __pow__(self, n):
         """
-        (x + eps dx)^n, n はスカラー（int/float/arb）だけ対応。
-        d/dx x^n = n x^(n-1) を使う。
+        (x + eps dx)^n
+        - n が int（整数）なら、通常の整数乗として扱う
+        - それ以外（実数指数）は x>0 を要求（実数の log が必要）
         """
         if isinstance(n, DualArb):
             raise TypeError("DualArb ** DualArb は未実装（スカラー指数だけ対応）。")
+        # --- 1) 整数指数（Python int） ---
+        if isinstance(n, int):
+            if n == 0:
+                # (x + eps dx)^0 = 1, 微分は 0
+                return DualArb(1, 0)
+            if n < 0:
+                # 0 の負整数乗は不可
+                # arb の「0と等しい」判定は曖昧になり得るので安全側に倒す
+                try:
+                    if self.val == 0:
+                        raise ZeroDivisionError("0 の負整数乗は定義できません。")
+                except TypeError:
+                    # 0 を含む可能性がある区間ならアウト
+                    raise ZeroDivisionError("0 を含む区間の負整数乗は定義できません。")
+            val = self.val ** n
+            der = arb(n) * (self.val ** (n - 1)) * self.der
+            return DualArb(val, der)
 
+        # --- 2) 非整数指数（実数指数） ---
         n_arb = arb(n)
+        # 実数としての x^n を exp(n log x) で定義するので x>0 が必要
+        require_pos(self.val, what="pow real-part (non-integer exponent)")
         val = self.val ** n_arb
         der = n_arb * (self.val ** (n_arb - 1)) * self.der
         return DualArb(val, der)
@@ -118,8 +153,10 @@ def dual_exp(x):
 def dual_log(x):
     """
     log(x + eps dx) = log(x) + eps * dx / x
+    定義域（実数）：実部が strictly positive
     """
     x = DualArb.lift(x)
+    require_pos(x.val, what="log real-part")
     return DualArb(x.val.log(), x.der / x.val)
 
 def dual_sin(x):
@@ -145,10 +182,13 @@ def dual_tan(x):
 def dual_sqrt(x):
     """
     sqrt(x + eps dx) = sqrt(x) + eps * dx / (2 * sqrt(x))
+    定義域（実数）：実部が strictly positive
     """
     x = DualArb.lift(x)
+    require_pos(x.val, what="sqrt real-part")
     v = x.val.sqrt()
     return DualArb(v, x.der / (2 * v))
+
 
 
 
